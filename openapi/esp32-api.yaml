@@ -1,0 +1,142 @@
+openapi: 3.0.3
+info:
+  title: FanForge ESP32 API
+  version: 1.0.0
+  description: |
+    API contract used by the FanForge UI to read/write fan controller state on ESP32/ESPHome firmware.
+servers:
+  - url: http://esp32.local
+    description: Typical local mDNS host
+paths:
+  /api/status:
+    get:
+      operationId: getStatus
+      summary: Read live controller status
+      responses:
+        '200':
+          description: Current status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+  /api/config:
+    get:
+      operationId: getConfig
+      summary: Read persisted fan configuration
+      responses:
+        '200':
+          description: Current config
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Config'
+    post:
+      operationId: setConfig
+      summary: Persist fan configuration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Config'
+      responses:
+        '200':
+          description: Saved config
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Config'
+components:
+  schemas:
+    Mode:
+      type: string
+      enum:
+        - auto
+        - manual
+        - off
+    SmoothingMode:
+      type: string
+      enum:
+        - linear
+        - smooth
+    CurvePoint:
+      type: object
+      required:
+        - t
+        - p
+      properties:
+        t:
+          type: number
+          description: Temperature in Celsius
+          minimum: 0
+          maximum: 120
+        p:
+          type: number
+          description: PWM percentage
+          minimum: 0
+          maximum: 100
+    Config:
+      type: object
+      required:
+        - mode
+        - smoothing_mode
+        - points
+        - min_pwm
+        - max_pwm
+        - slew_pct_per_sec
+        - failsafe_temp
+        - failsafe_pwm
+      properties:
+        mode:
+          $ref: '#/components/schemas/Mode'
+        smoothing_mode:
+          $ref: '#/components/schemas/SmoothingMode'
+        points:
+          type: array
+          minItems: 2
+          items:
+            $ref: '#/components/schemas/CurvePoint'
+        min_pwm:
+          type: number
+          minimum: 0
+          maximum: 100
+        max_pwm:
+          type: number
+          minimum: 0
+          maximum: 100
+        slew_pct_per_sec:
+          type: number
+          minimum: 0
+          maximum: 100
+        failsafe_temp:
+          type: number
+          minimum: 0
+          maximum: 120
+        failsafe_pwm:
+          type: number
+          minimum: 0
+          maximum: 100
+    StatusResponse:
+      type: object
+      required:
+        - temp_c
+        - pwm_pct
+        - mode
+        - smoothing_mode
+      properties:
+        temp_c:
+          type: number
+          description: Current temperature in Celsius
+        pwm_pct:
+          type: number
+          description: Current PWM output percentage
+          minimum: 0
+          maximum: 100
+        mode:
+          $ref: '#/components/schemas/Mode'
+        smoothing_mode:
+          $ref: '#/components/schemas/SmoothingMode'
+        last_update_ms:
+          type: integer
+          format: int64
+          description: Optional millis timestamp from firmware
