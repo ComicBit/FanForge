@@ -472,17 +472,21 @@ function CurveEditor({
   const isSmooth = smoothingMode === "smooth";
 
   const bounds = normalizePwmBounds(pwmMin, pwmMax);
-  const yMin = bounds.min;
-  const yMax = bounds.max;
+  const pwmLowerLimit = bounds.min;
+  const pwmUpperLimit = bounds.max;
+  const pwmAxisMin = 0;
+  const pwmAxisMax = 100;
+  const plotWidth = width - pad * 2;
+  const plotHeight = height - pad * 2;
 
   const ptsSorted = useMemo(
     () =>
       sortPoints(points).map((p) => ({
         ...p,
         t: clamp(p.t, xMin, xMax),
-        p: clamp(p.p, yMin, yMax),
+        p: clamp(p.p, pwmLowerLimit, pwmUpperLimit),
       })),
-    [points, xMin, xMax, yMin, yMax]
+    [points, xMin, xMax, pwmLowerLimit, pwmUpperLimit]
   );
 
   const xScale = (t: number) => {
@@ -490,16 +494,16 @@ function CurveEditor({
     return pad + u * (width - pad * 2);
   };
   const yScale = (p: number) => {
-    const u = (p - yMin) / (yMax - yMin);
-    return height - pad - u * (height - pad * 2);
+    const u = (p - pwmAxisMin) / (pwmAxisMax - pwmAxisMin);
+    return height - pad - u * plotHeight;
   };
   const xInv = (x: number) => {
     const u = (x - pad) / (width - pad * 2);
     return xMin + u * (xMax - xMin);
   };
   const yInv = (y: number) => {
-    const u = (height - pad - y) / (height - pad * 2);
-    return yMin + u * (yMax - yMin);
+    const u = (height - pad - y) / plotHeight;
+    return pwmAxisMin + u * (pwmAxisMax - pwmAxisMin);
   };
 
   const snap = (v: number) => Math.round(v / grid) * grid;
@@ -599,20 +603,22 @@ function CurveEditor({
       const leftBound = idx > 0 ? sorted[idx - 1].t + 1 : xMin;
       const rightBound = idx < sorted.length - 1 ? sorted[idx + 1].t - 1 : xMax;
       const t = clamp(snap(xInv(px)), leftBound, rightBound);
-      const p = clamp(snap(yInv(py)), yMin, yMax);
+      const p = clamp(snap(yInv(py)), pwmLowerLimit, pwmUpperLimit);
 
       return sorted.map((pt, i) => (i === idx ? { ...pt, t, p } : pt));
     });
   };
 
   const onPointerUp = () => setDragId(null);
+  const lowerStopY = yScale(pwmLowerLimit);
+  const upperStopY = yScale(pwmUpperLimit);
 
   const addPoint = () => {
     const s = sortPoints(points);
     const a = s[Math.max(0, s.length - 2)];
     const b = s[Math.max(0, s.length - 1)];
     const t = clamp(Math.round((a.t + b.t) / 2), xMin, xMax);
-    const p = clamp(Math.round((a.p + b.p) / 2), yMin, yMax);
+    const p = clamp(Math.round((a.p + b.p) / 2), pwmLowerLimit, pwmUpperLimit);
     const id = `p${Date.now().toString(36)}`;
     setPoints(sortPoints([...s, { t, p, id }]));
   };
@@ -717,13 +723,19 @@ function CurveEditor({
               <rect
                 x={pad}
                 y={pad}
-                width={width - pad * 2}
-                height={height - pad * 2}
+                width={plotWidth}
+                height={plotHeight}
                 fill="#ffffff"
                 opacity={0.5}
                 filter="url(#grainTexture)"
                 style={{ mixBlendMode: "overlay", pointerEvents: "none" }}
               />
+              {pwmUpperLimit < 100 && (
+                <rect x={pad} y={pad} width={plotWidth} height={upperStopY - pad} fill="#0f172a" opacity={0.06} />
+              )}
+              {pwmLowerLimit > 0 && (
+                <rect x={pad} y={lowerStopY} width={plotWidth} height={height - pad - lowerStopY} fill="#0f172a" opacity={0.06} />
+              )}
 
               {/* Grid_ATTACH: grid lines */}
               {Array.from({ length: 11 }).map((_, i) => {
@@ -777,6 +789,12 @@ function CurveEditor({
               </text>
               {/* Current temp marker */}
               <line x1={tempLineX} y1={pad} x2={tempLineX} y2={height - pad} stroke="#334155" opacity={0.45} strokeDasharray="6 6" />
+              {pwmLowerLimit > 0 && (
+                <line x1={pad} y1={lowerStopY} x2={width - pad} y2={lowerStopY} stroke="#0f172a" opacity={0.34} strokeDasharray="4 5" />
+              )}
+              {pwmUpperLimit < 100 && (
+                <line x1={pad} y1={upperStopY} x2={width - pad} y2={upperStopY} stroke="#0f172a" opacity={0.34} strokeDasharray="4 5" />
+              )}
 
               {/* Curve */}
               {smoothingMode === "smooth" ? (
@@ -821,7 +839,7 @@ function CurveEditor({
         </div>
         <div className="mt-3 flex flex-col items-start justify-between gap-2 px-3 pb-3 sm:flex-row sm:items-center sm:gap-3 sm:px-4 sm:pb-4">
           <div className="text-xs text-muted-foreground sm:text-sm">
-            Drag points (X = temperature, Y = PWM). Temp: {xMin}..{xMax}°C, PWM: {round(yMin, 0)}..{round(yMax, 0)}%.
+            Drag points (X = temperature, Y = PWM). Temp: {xMin}..{xMax}°C. Stop range: {round(pwmLowerLimit, 0)}..{round(pwmUpperLimit, 0)}% PWM.
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="secondary">Temp: {round(tempC, 1)}°C</Badge>
@@ -882,11 +900,11 @@ function CurveEditor({
                             <div className="flex items-center gap-1.5">
                               <Slider
                                 value={[pt.p]}
-                                min={yMin}
-                                max={yMax}
+                                min={0}
+                                max={100}
                                 step={1}
                                 onValueChange={(v) => {
-                                  const p = clamp(v[0], yMin, yMax);
+                                  const p = clamp(v[0], pwmLowerLimit, pwmUpperLimit);
                                   setPoints((prev) => sortPoints(prev.map((x) => (x.id === pt.id ? { ...x, p } : x))));
                                 }}
                               />
