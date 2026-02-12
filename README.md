@@ -28,15 +28,13 @@ Firmware-first thermal control with an optional web operations console and a doc
   <img src="docs/assets/fanforge-ui.png" alt="FanForge UI" width="88%" />
 </p>
 
-## Executive Summary
-
 FanForge is a control system for PWM fan management on ESP32/ESPHome hardware. It provides:
 
 - Autonomous on-device control logic
 - A production-style browser UI for curve editing, validation, and telemetry
 - A versioned API contract for external integrations
 
-The controller is the source of truth. The web UI is intentionally optional.
+The controller is software does not depend from the Web UI which is intentionally optional.
 
 ## Core Design Principle
 
