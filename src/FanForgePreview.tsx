@@ -1490,7 +1490,11 @@ export default function FanForgePreview() {
                       value={cfg.min_pwm}
                       onChange={(e) =>
                         setCfg((c) => {
-                          const min_pwm = clamp(Number(e.target.value), 0, 100);
+                          const raw = e.target.value.trim();
+                          if (raw === "") return c;
+                          const parsed = Number(raw);
+                          if (!Number.isFinite(parsed)) return c;
+                          const min_pwm = clamp(parsed, 0, 100);
                           if (!Number.isFinite(min_pwm)) return c;
                           return { ...c, min_pwm, max_pwm: Math.max(c.max_pwm, min_pwm) };
                         })
@@ -1505,7 +1509,11 @@ export default function FanForgePreview() {
                       value={cfg.max_pwm}
                       onChange={(e) =>
                         setCfg((c) => {
-                          const max_pwm = clamp(Number(e.target.value), 0, 100);
+                          const raw = e.target.value.trim();
+                          if (raw === "") return c;
+                          const parsed = Number(raw);
+                          if (!Number.isFinite(parsed)) return c;
+                          const max_pwm = clamp(parsed, 0, 100);
                           if (!Number.isFinite(max_pwm)) return c;
                           return { ...c, max_pwm, min_pwm: Math.min(c.min_pwm, max_pwm) };
                         })
