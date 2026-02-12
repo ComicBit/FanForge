@@ -19,49 +19,32 @@ using esphome::web_server_idf::AsyncWebServerRequest;
 using esphome::web_server_idf::AsyncWebServerResponse;
 
 static constexpr int FT_MAX_POINTS = 16;
-static constexpr bool FT_PWM_INVERTED = true;  // 6N137 + 4-wire fan common wiring
+
+/**
+ * Hardware: EC fan "yellow" control input has an internal pull-up to ~5V.
+ * We drive it using an NPN open-collector pull-down:
+ *   - ESP GPIO -> base resistor -> NPN base
+ *   - NPN collector -> fan yellow
+ *   - NPN emitter -> GND (shared with fan)
+ *
+ * In this topology the effective signal at the fan is inverted:
+ *   GPIO HIGH  -> transistor ON  -> yellow pulled LOW
+ *   GPIO LOW   -> transistor OFF -> yellow pulled HIGH (via fan pull-up)
+ *
+ * Many EC fans interpret "HIGH" as maximum command, and "LOW" as minimum/off.
+ * Therefore we invert so that "pwm_pct" feels intuitive:
+ *   pwm_pct = 0%   => yellow LOW (off/min)
+ *   pwm_pct = 100% => yellow HIGH (max)
+ */
+static constexpr bool FT_PWM_INVERTED = true;
+
 // Control-loop stabilization for real sensor noise and DS18B20 quantization.
-//
-// FT_TEMP_EMA_ALPHA controls exponential moving average (EMA) filtering applied
-// to raw temperature before curve evaluation:
-//   filtered = filtered + alpha * (raw - filtered)
-// - Lower alpha (ex: 0.10..0.20): stronger filtering, less jitter, but slower
-//   response to real thermal changes (more lag when system heats/cools quickly).
-// - Higher alpha (ex: 0.35..0.60): faster tracking of real changes, but more
-//   sensitivity to measurement noise and step-like sensor quantization.
-// Practical tuning:
-// - If PWM chatters while temperature is near steady state, decrease alpha.
-// - If fan reacts too slowly to load spikes, increase alpha slightly.
-// - Change in small steps (about 0.05) and re-test thermal transients.
 static constexpr float FT_TEMP_EMA_ALPHA = 0.25f;
-//
-// FT_PWM_DEADBAND_PCT defines a "do nothing" zone around current output.
-// If |target_pwm - current_pwm| is below this threshold, we hold output steady.
-// This removes constant micro-corrections caused by sensor noise and finite
-// temperature resolution (9-bit DS18B20 reports in 0.5 C steps).
-// - Lower deadband (ex: 0.5..1.0): tighter control, but more audible/visible
-//   fan speed hunting in noisy conditions.
-// - Higher deadband (ex: 2.0..3.0): calmer fan behavior, but coarse control and
-//   slightly larger steady-state temperature error near curve transitions.
-// Practical tuning:
-// - Start around 1.0..1.5 for most fans.
-// - Increase if RPM keeps oscillating at stable temperature.
-// - Decrease if output feels too "sticky" and misses small valid corrections.
+
+// Output "do nothing" zone to prevent micro-hunting.
 static constexpr float FT_PWM_DEADBAND_PCT = 1.5f;
-//
-// FT_FAILSAFE_HYST_C is hysteresis applied to failsafe threshold to avoid
-// rapid on/off toggling when temperature hovers around cfg_failsafe_temp.
-// Behavior:
-// - Failsafe turns ON at:  temp >= cfg_failsafe_temp
-// - Failsafe turns OFF at: temp <= cfg_failsafe_temp - hysteresis
-// - Effective band width is exactly FT_FAILSAFE_HYST_C degrees C.
-// - Lower hysteresis (ex: 0.3..0.7): faster release from failsafe, but higher
-//   risk of chatter near threshold.
-// - Higher hysteresis (ex: 1.5..3.0): very stable failsafe state, but slower
-//   return to normal control after a high-temperature event.
-// Practical tuning:
-// - Keep at least 0.5 C with DS18B20 at 9-bit resolution.
-// - Increase if failsafe repeatedly toggles near threshold.
+
+// Failsafe hysteresis.
 static constexpr float FT_FAILSAFE_HYST_C = 1.0f;
 
 struct FtPoint {
@@ -76,6 +59,8 @@ static inline float ft_clampf(float v, float lo, float hi) {
 }
 
 static inline void ft_add_cors(AsyncWebServerResponse *res) {
+  // ESPHome web_server already emits Access-Control-Allow-Origin.
+  // Adding it again here results in duplicated values ("*, *") and browser CORS failures.
   res->addHeader("Access-Control-Allow-Headers", "Content-Type");
   res->addHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res->addHeader("Access-Control-Allow-Private-Network", "true");
@@ -110,7 +95,6 @@ static inline void ft_send_json(AsyncWebServerRequest *req, JsonDocument &doc, i
   std::string payload;
   serializeJson(doc, payload);
   auto *res = req->beginResponse(status, "application/json", payload);
-  ft_add_cors(res);
   req->send(res);
 }
 
@@ -271,6 +255,9 @@ static inline void ft_build_config_doc(JsonDocument &doc) {
   doc["slew_pct_per_sec"] = id(cfg_slew_pct_per_sec);
   doc["failsafe_temp"] = id(cfg_failsafe_temp);
   doc["failsafe_pwm"] = id(cfg_failsafe_pwm);
+
+  // Optional: expose manual pwm for UI convenience (doesn't change API contract)
+  doc["manual_pwm"] = id(cfg_manual_pwm);
 }
 
 static inline bool ft_apply_config_doc(JsonDocument &doc, String &err) {
@@ -318,6 +305,13 @@ static inline bool ft_apply_config_doc(JsonDocument &doc, String &err) {
   JsonDocument points_doc;
   JsonArray points = points_doc.to<JsonArray>();
   if (!ft_parse_points(doc["points"].as<JsonArray>(), points, err)) return false;
+  for (JsonObject p : points) {
+    float point_pwm = p["p"].as<float>();
+    if (point_pwm < min_pwm || point_pwm > max_pwm) {
+      err = "point.p must be within min_pwm..max_pwm";
+      return false;
+    }
+  }
 
   std::string points_json;
   serializeJson(points, points_json);
@@ -331,7 +325,23 @@ static inline bool ft_apply_config_doc(JsonDocument &doc, String &err) {
   id(cfg_failsafe_temp) = failsafe_temp;
   id(cfg_failsafe_pwm) = failsafe_pwm;
 
+  // Optional
+  if (doc["manual_pwm"].is<float>()) {
+    id(cfg_manual_pwm) = ft_clampf(doc["manual_pwm"].as<float>(), 0.0f, 100.0f);
+  }
+
   return true;
+}
+
+static inline void ft_apply_pwm_percent(float pwm_pct) {
+  // pwm_pct here is the "user meaning": 0..100, where 0 should truly be off/min.
+  pwm_pct = ft_clampf(pwm_pct, 0.0f, 100.0f);
+
+  float level = pwm_pct / 100.0f;          // 0..1
+  if (FT_PWM_INVERTED) level = 1.0f - level;
+
+  level = ft_clampf(level, 0.0f, 1.0f);
+  id(fan_pwm_output).set_level(level);
 }
 
 static inline void fanforge_control_tick() {
@@ -339,6 +349,7 @@ static inline void fanforge_control_tick() {
   static float filtered_temp_c = NAN;
   static bool failsafe_latched = false;
 
+  // Load curve points
   FtPoint points[FT_MAX_POINTS];
   int n = ft_load_points(points, FT_MAX_POINTS);
   if (n < 2) {
@@ -347,12 +358,14 @@ static inline void fanforge_control_tick() {
     n = 2;
   }
 
+  // Read temp
   float raw_temp = id(temp_c).state;
   if (!isfinite(raw_temp)) {
     id(last_update_ms) = millis();
     return;
   }
 
+  // EMA filter
   if (!temp_filter_initialized || !isfinite(filtered_temp_c)) {
     filtered_temp_c = raw_temp;
     temp_filter_initialized = true;
@@ -361,16 +374,31 @@ static inline void fanforge_control_tick() {
   }
   float temp = filtered_temp_c;
 
+  // Compute target
   float target_pwm = 0.0f;
+
   if (id(cfg_mode) == 2) {
+    // OFF: force to 0 and do not clamp up to min_pwm.
     target_pwm = 0.0f;
   } else if (id(cfg_mode) == 1) {
+    // MANUAL: allow true 0.
     target_pwm = ft_clampf(id(cfg_manual_pwm), 0.0f, 100.0f);
   } else {
+    // AUTO
     target_pwm = (id(cfg_smoothing_mode) == 1) ? ft_curve_smooth(temp, points, n) : ft_curve_linear(temp, points, n);
+    target_pwm = ft_clampf(target_pwm, 0.0f, 100.0f);
   }
 
-  target_pwm = ft_clampf(target_pwm, id(cfg_min_pwm), id(cfg_max_pwm));
+  // Only apply min/max clamp when we're not asking for 0.
+  // This keeps "off" and "manual 0" truly off, while still enforcing a practical
+  // minimum once we want the fan running.
+  if (target_pwm > 0.0f) {
+    target_pwm = ft_clampf(target_pwm, id(cfg_min_pwm), id(cfg_max_pwm));
+  } else {
+    target_pwm = 0.0f;
+  }
+
+  // Failsafe latch with hysteresis
   if (temp >= id(cfg_failsafe_temp)) {
     failsafe_latched = true;
   } else if (temp <= (id(cfg_failsafe_temp) - FT_FAILSAFE_HYST_C)) {
@@ -379,11 +407,12 @@ static inline void fanforge_control_tick() {
   if (failsafe_latched) target_pwm = fmaxf(target_pwm, id(cfg_failsafe_pwm));
   target_pwm = ft_clampf(target_pwm, 0.0f, 100.0f);
 
-  // Keep fan output stable around tiny corrections caused by sensor quantization/noise.
+  // Deadband: avoid micro-hunting due to quantization/noise
   if (fabsf(target_pwm - id(current_pwm_pct)) < FT_PWM_DEADBAND_PCT) {
     target_pwm = id(current_pwm_pct);
   }
 
+  // Slew limiting
   uint32_t now = millis();
   float dt = 0.2f;
   if (id(last_update_ms) > 0 && now >= id(last_update_ms)) {
@@ -398,10 +427,8 @@ static inline void fanforge_control_tick() {
   id(current_pwm_pct) = next_pwm;
   id(last_update_ms) = now;
 
-  float level = next_pwm / 100.0f;
-  if (FT_PWM_INVERTED) level = 1.0f - level;
-  level = ft_clampf(level, 0.0f, 1.0f);
-  id(fan_pwm_output).set_level(level);
+  // Drive hardware output
+  ft_apply_pwm_percent(next_pwm);
 }
 
 class FanForgeApiHandler : public AsyncWebHandler {
@@ -429,14 +456,17 @@ class FanForgeApiHandler : public AsyncWebHandler {
 
     if (m == HTTP_GET && url == "/api/status") {
       JsonDocument doc;
+
       if (isfinite(id(temp_c).state))
         doc["temp_c"] = id(temp_c).state;
       else
         doc["temp_c"] = nullptr;
+
       doc["pwm_pct"] = id(current_pwm_pct);
       doc["mode"] = ft_mode_to_str(id(cfg_mode));
       doc["smoothing_mode"] = ft_smoothing_to_str(id(cfg_smoothing_mode));
       doc["last_update_ms"] = id(last_update_ms);
+
       ft_send_json(request, doc, 200);
       return;
     }
@@ -489,11 +519,8 @@ class FanForgeApiHandler : public AsyncWebHandler {
     }
 
     auto *res = request->beginResponse(404, "application/json", "{}");
-    ft_add_cors(res);
     request->send(res);
   }
-
- private:
 };
 
 static inline void fanforge_api_init() {
@@ -507,4 +534,4 @@ static inline void fanforge_api_init() {
   ESP_LOGI("fanforge_api", "Registered /api/status and /api/config");
 }
 
-#endif
+#endif  // USE_ESP32

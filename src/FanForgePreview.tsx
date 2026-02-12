@@ -40,6 +40,13 @@ const round = (v: number, digits = 0) => {
   return Math.round(v * m) / m;
 };
 
+function normalizePwmBounds(minPwm: number, maxPwm: number) {
+  const a = clamp(minPwm, 0, 100);
+  const b = clamp(maxPwm, 0, 100);
+  if (a <= b) return { min: a, max: b };
+  return { min: b, max: a };
+}
+
 type Point = { t: number; p: number; id: string };
 
 type Mode = "auto" | "manual" | "off";
@@ -295,18 +302,27 @@ function toInternalPoints(cfg: Config): Point[] {
 }
 
 function toConfig(points: Point[], cfg: Config): Config {
+  const bounds = normalizePwmBounds(cfg.min_pwm, cfg.max_pwm);
   return {
     ...cfg,
-    points: sortPoints(points).map(({ t, p }) => ({ t: round(t, 0), p: round(p, 0) })),
+    min_pwm: bounds.min,
+    max_pwm: bounds.max,
+    points: sortPoints(points).map(({ t, p }) => ({
+      t: round(t, 0),
+      p: clamp(round(p, 0), bounds.min, bounds.max),
+    })),
   };
 }
 
 function normalizeConfig(cfg: Config): Config {
+  const bounds = normalizePwmBounds(cfg.min_pwm, cfg.max_pwm);
   return {
     ...cfg,
+    min_pwm: bounds.min,
+    max_pwm: bounds.max,
     points: [...cfg.points]
       .sort((a, b) => a.t - b.t)
-      .map((pt) => ({ t: round(pt.t, 0), p: round(pt.p, 0) })),
+      .map((pt) => ({ t: round(pt.t, 0), p: clamp(round(pt.p, 0), bounds.min, bounds.max) })),
   };
 }
 
@@ -398,6 +414,7 @@ function computeCurvePWMSmooth(tempC: number, pointsSorted: Array<{ t: number; p
 function validateConfig(cfg: Config): { ok: boolean; errors: string[]; warnings: string[] } {
   const errors: string[] = [];
   const warnings: string[] = [];
+  const bounds = normalizePwmBounds(cfg.min_pwm, cfg.max_pwm);
 
   if (cfg.points.length < 2) errors.push("Need at least 2 curve points.");
   const pts = [...cfg.points].sort((a, b) => a.t - b.t);
@@ -406,6 +423,7 @@ function validateConfig(cfg: Config): { ok: boolean; errors: string[]; warnings:
     if (!Number.isFinite(t) || !Number.isFinite(p)) errors.push("Curve points must be numbers.");
     if (t < 0 || t > 100) warnings.push("Some temperatures are outside 0..100°C.");
     if (p < 0 || p > 100) errors.push("PWM % must be within 0..100.");
+    if (p < bounds.min || p > bounds.max) errors.push(`Curve point PWM must be within min/max (${round(bounds.min, 0)}..${round(bounds.max, 0)}).`);
     if (i > 0 && pts[i - 1].t >= t) errors.push("Temperatures must be strictly increasing.");
   }
   if (cfg.min_pwm < 0 || cfg.min_pwm > 100) errors.push("min_pwm must be 0..100.");
@@ -426,6 +444,8 @@ function CurveEditor({
   tempC,
   xMin = 15,
   xMax = 50,
+  pwmMin = 0,
+  pwmMax = 100,
   width = 760,
   height = 380,
   pad = 32,
@@ -438,6 +458,8 @@ function CurveEditor({
   tempC: number;
   xMin?: number;
   xMax?: number;
+  pwmMin?: number;
+  pwmMax?: number;
   width?: number;
   height?: number;
   pad?: number;
@@ -449,12 +471,18 @@ function CurveEditor({
   const [dragId, setDragId] = useState<string | null>(null);
   const isSmooth = smoothingMode === "smooth";
 
-  const yMin = 0;
-  const yMax = 100;
+  const bounds = normalizePwmBounds(pwmMin, pwmMax);
+  const yMin = bounds.min;
+  const yMax = bounds.max;
 
   const ptsSorted = useMemo(
-    () => sortPoints(points).map((p) => ({ ...p, t: clamp(p.t, xMin, xMax) })),
-    [points, xMin, xMax]
+    () =>
+      sortPoints(points).map((p) => ({
+        ...p,
+        t: clamp(p.t, xMin, xMax),
+        p: clamp(p.p, yMin, yMax),
+      })),
+    [points, xMin, xMax, yMin, yMax]
   );
 
   const xScale = (t: number) => {
@@ -793,7 +821,7 @@ function CurveEditor({
         </div>
         <div className="mt-3 flex flex-col items-start justify-between gap-2 px-3 pb-3 sm:flex-row sm:items-center sm:gap-3 sm:px-4 sm:pb-4">
           <div className="text-xs text-muted-foreground sm:text-sm">
-            Drag points (X = temperature, Y = PWM). Range: 0..{xMax}°C.
+            Drag points (X = temperature, Y = PWM). Temp: {xMin}..{xMax}°C, PWM: {round(yMin, 0)}..{round(yMax, 0)}%.
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="secondary">Temp: {round(tempC, 1)}°C</Badge>
@@ -854,11 +882,11 @@ function CurveEditor({
                             <div className="flex items-center gap-1.5">
                               <Slider
                                 value={[pt.p]}
-                                min={0}
-                                max={100}
+                                min={yMin}
+                                max={yMax}
                                 step={1}
                                 onValueChange={(v) => {
-                                  const p = v[0];
+                                  const p = clamp(v[0], yMin, yMax);
                                   setPoints((prev) => sortPoints(prev.map((x) => (x.id === pt.id ? { ...x, p } : x))));
                                 }}
                               />
@@ -916,6 +944,19 @@ export default function FanForgePreview() {
     // Keep cfg in sync with points without causing extra re-renders on every drag.
     return next;
   }, [points, cfg]);
+
+  useEffect(() => {
+    const bounds = normalizePwmBounds(cfg.min_pwm, cfg.max_pwm);
+    setPoints((prev) => {
+      let changed = false;
+      const next = prev.map((pt) => {
+        const clampedP = clamp(pt.p, bounds.min, bounds.max);
+        if (clampedP !== pt.p) changed = true;
+        return changed ? { ...pt, p: clampedP } : pt;
+      });
+      return changed ? sortPoints(next) : prev;
+    });
+  }, [cfg.min_pwm, cfg.max_pwm]);
 
   const validation = useMemo(() => validateConfig(effectiveConfig), [effectiveConfig]);
   const hasPendingChanges = useMemo(
@@ -1101,10 +1142,11 @@ export default function FanForgePreview() {
         failsafe_temp: Number(c.failsafe_temp ?? DEFAULT_CONFIG.failsafe_temp),
         failsafe_pwm: Number(c.failsafe_pwm ?? DEFAULT_CONFIG.failsafe_pwm),
       };
-      setCfg(normalized);
-      setSmoothingMode(normalized.smoothing_mode);
-      setPoints(toInternalPoints(normalized));
-      setAppliedConfig(normalizeConfig(normalized));
+      const sanitized = normalizeConfig(normalized);
+      setCfg(sanitized);
+      setSmoothingMode(sanitized.smoothing_mode);
+      setPoints(toInternalPoints(sanitized));
+      setAppliedConfig(sanitized);
       setConnected(true);
       if (notify) {
         pushToast("success", "Synced from ESP32", `Loaded config from ${apiBase}/api/config`);
@@ -1241,6 +1283,8 @@ export default function FanForgePreview() {
               tempC={displayedTemp}
               xMin={curveMin}
               xMax={curveMax}
+              pwmMin={cfg.min_pwm}
+              pwmMax={cfg.max_pwm}
               smoothingMode={smoothingMode}
               onSmoothingChange={(mode) => {
                 setSmoothingMode(mode);
@@ -1426,7 +1470,13 @@ export default function FanForgePreview() {
                     <Label>Min PWM %</Label>
                     <Input
                       value={cfg.min_pwm}
-                      onChange={(e) => setCfg((c) => ({ ...c, min_pwm: clamp(Number(e.target.value), 0, 100) }))}
+                      onChange={(e) =>
+                        setCfg((c) => {
+                          const min_pwm = clamp(Number(e.target.value), 0, 100);
+                          if (!Number.isFinite(min_pwm)) return c;
+                          return { ...c, min_pwm, max_pwm: Math.max(c.max_pwm, min_pwm) };
+                        })
+                      }
                       className="rounded-xl"
                       inputMode="numeric"
                     />
@@ -1435,7 +1485,13 @@ export default function FanForgePreview() {
                     <Label>Max PWM %</Label>
                     <Input
                       value={cfg.max_pwm}
-                      onChange={(e) => setCfg((c) => ({ ...c, max_pwm: clamp(Number(e.target.value), 0, 100) }))}
+                      onChange={(e) =>
+                        setCfg((c) => {
+                          const max_pwm = clamp(Number(e.target.value), 0, 100);
+                          if (!Number.isFinite(max_pwm)) return c;
+                          return { ...c, max_pwm, min_pwm: Math.min(c.min_pwm, max_pwm) };
+                        })
+                      }
                       className="rounded-xl"
                       inputMode="numeric"
                     />
