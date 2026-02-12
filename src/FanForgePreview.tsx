@@ -156,6 +156,30 @@ function smoothPath(points: Array<{ x: number; y: number }>) {
   return d;
 }
 
+const BASE_TEMP_MIN = 15;
+const BASE_TEMP_MAX = 50;
+const MIN_TEMP_WINDOW_SPAN = 1;
+
+function remapTemperature(value: number, fromMin: number, fromMax: number, toMin: number, toMax: number) {
+  const u = clamp((value - fromMin) / Math.max(1e-6, fromMax - fromMin), 0, 1);
+  return toMin + u * (toMax - toMin);
+}
+
+function normalizeTempWindow(minTemp: number, maxTemp: number) {
+  let min = clamp(round(minTemp, 0), BASE_TEMP_MIN, BASE_TEMP_MAX);
+  let max = clamp(round(maxTemp, 0), BASE_TEMP_MIN, BASE_TEMP_MAX);
+  if (min > max) {
+    const tmp = min;
+    min = max;
+    max = tmp;
+  }
+  if (max - min < MIN_TEMP_WINDOW_SPAN) {
+    if (max + MIN_TEMP_WINDOW_SPAN <= BASE_TEMP_MAX) max = min + MIN_TEMP_WINDOW_SPAN;
+    else min = max - MIN_TEMP_WINDOW_SPAN;
+  }
+  return { min, max };
+}
+
 function tempColor(temp: number, min: number, max: number) {
   const u = clamp((temp - min) / Math.max(1e-6, max - min), 0, 1);
   const r = Math.round(37 + (239 - 37) * u);
@@ -196,6 +220,8 @@ function MetricTimeline({
   variant = "pwm",
   yMin = 0,
   yMax = 100,
+  colorDomainMin = yMin,
+  colorDomainMax = yMax,
   width = 320,
   height = 96,
 }: {
@@ -204,6 +230,8 @@ function MetricTimeline({
   variant?: "temp" | "pwm";
   yMin?: number;
   yMax?: number;
+  colorDomainMin?: number;
+  colorDomainMax?: number;
   width?: number;
   height?: number;
 }) {
@@ -226,14 +254,14 @@ function MetricTimeline({
   const lastVal = smoothValues[smoothValues.length - 1];
   const key = `${variant}-${color.replace("#", "")}`;
   const strokeRef = variant === "temp" ? `url(#temp-gradient-${key})` : `url(#fade-${key})`;
-  const tempPointer = variant === "temp" ? tempColor(lastVal, yMin, yMax) : color;
+  const tempPointer = variant === "temp" ? tempColor(lastVal, colorDomainMin, colorDomainMax) : color;
   const glowStroke = variant === "temp" ? tempPointer : color;
   const tempStops = variant === "temp"
     ? Array.from({ length: 28 }, (_, idx) => {
         const u = idx / 27;
         const sampleIdx = Math.round(u * (smoothValues.length - 1));
         const v = smoothValues[sampleIdx];
-        return { offset: `${Math.round(u * 100)}%`, color: tempColor(v, yMin, yMax) };
+        return { offset: `${Math.round(u * 100)}%`, color: tempColor(v, colorDomainMin, colorDomainMax) };
       })
     : [];
 
@@ -446,8 +474,8 @@ function CurveEditor({
   points,
   setPoints,
   tempC,
-  xMin = 15,
-  xMax = 50,
+  xMin = BASE_TEMP_MIN,
+  xMax = BASE_TEMP_MAX,
   pwmMin = 0,
   pwmMax = 100,
   width = 760,
@@ -482,6 +510,9 @@ function CurveEditor({
   const pwmAxisMax = 100;
   const plotWidth = width - pad * 2;
   const plotHeight = height - pad * 2;
+  const gradientStart = tempColor(xMin, BASE_TEMP_MIN, BASE_TEMP_MAX);
+  const gradientMid = tempColor((xMin + xMax) / 2, BASE_TEMP_MIN, BASE_TEMP_MAX);
+  const gradientEnd = tempColor(xMax, BASE_TEMP_MIN, BASE_TEMP_MAX);
 
   const ptsSorted = useMemo(
     () =>
@@ -685,8 +716,9 @@ function CurveEditor({
           >
             <defs>
               <linearGradient id="tempGradient" x1="0" y1="0" x2="1" y2="0" gradientUnits="objectBoundingBox">
-                <stop offset="0%" stopColor="#2563eb" stopOpacity="0.78" />
-                <stop offset="100%" stopColor="#ef4444" stopOpacity="0.78" />
+                <stop offset="0%" stopColor={gradientStart} stopOpacity="0.78" />
+                <stop offset="50%" stopColor={gradientMid} stopOpacity="0.78" />
+                <stop offset="100%" stopColor={gradientEnd} stopOpacity="0.78" />
               </linearGradient>
               <linearGradient id="curveGlow" x1="0" y1="0" x2="1" y2="0">
                 <stop offset="0%" stopColor="#ffffff" />
@@ -954,8 +986,8 @@ export default function FanForgePreview() {
 
   // Simulated environment
   const [simTemp, setSimTemp] = useState(41);
-  const [curveMin, setCurveMin] = useState(15);
-  const [curveMax, setCurveMax] = useState(50);
+  const [curveMin, setCurveMin] = useState(BASE_TEMP_MIN);
+  const [curveMax, setCurveMax] = useState(BASE_TEMP_MAX);
   const [simRunning, setSimRunning] = useState(true);
   const [simDriftThreshold, setSimDriftThreshold] = useState(0.4);
 
@@ -1012,6 +1044,32 @@ export default function FanForgePreview() {
     return `${context}: Unknown error`;
   }
 
+  const applyTempWindow = React.useCallback(
+    (nextMin: number, nextMax: number) => {
+      const normalized = normalizeTempWindow(nextMin, nextMax);
+      if (normalized.min === curveMin && normalized.max === curveMax) return;
+
+      setCurveMin(normalized.min);
+      setCurveMax(normalized.max);
+      setPoints((prev) =>
+        sortPoints(
+          prev.map((pt) => ({
+            ...pt,
+            t: round(remapTemperature(pt.t, curveMin, curveMax, normalized.min, normalized.max), 2),
+          }))
+        )
+      );
+      setSimTemp((temp) =>
+        clamp(
+          round(remapTemperature(temp, curveMin, curveMax, normalized.min, normalized.max), 2),
+          normalized.min,
+          normalized.max
+        )
+      );
+    },
+    [curveMin, curveMax]
+  );
+
   const targetPWM = useMemo(() => {
     const c = effectiveConfig;
     if (c.mode === "off") return 0;
@@ -1019,7 +1077,7 @@ export default function FanForgePreview() {
       return clamp(c.manual_pwm, 0, 100);
     }
 
-    // Curve domain is 0..CURVE_XMAX. Values above saturate to the last point.
+    // Clamp temperature input to the currently visible temperature window.
     const temp = clamp(simTemp, curveMin, curveMax);
 
     let pwm =
@@ -1030,7 +1088,7 @@ export default function FanForgePreview() {
     pwm = clamp(pwm, c.min_pwm, c.max_pwm);
     if (temp >= c.failsafe_temp) pwm = Math.max(pwm, c.failsafe_pwm);
     return clamp(pwm, 0, 100);
-    }, [effectiveConfig, simTemp, curveMin, curveMax]);
+  }, [effectiveConfig, simTemp, curveMin, curveMax]);
 
   useEffect(() => {
     if (useApi && connected === true) return;
@@ -1415,6 +1473,8 @@ export default function FanForgePreview() {
                         variant="temp"
                         yMin={curveMin}
                         yMax={curveMax}
+                        colorDomainMin={BASE_TEMP_MIN}
+                        colorDomainMax={BASE_TEMP_MAX}
                       />
                     </motion.div>
                   </div>
@@ -1435,15 +1495,15 @@ export default function FanForgePreview() {
                     </Badge>
                   </div>
                   <Slider
-                    value={[simTemp]}
-                    min={0}
+                    value={[clamp(simTemp, curveMin, curveMax)]}
+                    min={curveMin}
                     max={curveMax}
                     step={0.5}
                     disabled={isLiveDeviceConnected}
                     onValueChange={(v) => setSimTemp(v[0])}
                   />
                   <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <span>0°C</span>
+                    <span>{round(curveMin, 0)}°C</span>
                     <span>{curveMax}°C</span>
                   </div>
                 </div>
@@ -1495,6 +1555,48 @@ export default function FanForgePreview() {
                       <SelectItem value="off">Off</SelectItem>
                     </SelectContent>
                   </Select>
+                </div>
+
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Label>Temp window (diagram zoom)</Label>
+                      <InfoHint text="Remaps curve temperatures to this min/max window while keeping the point shape fixed in place." />
+                    </div>
+                    <Badge variant="secondary">
+                      {round(curveMin, 0)}..{round(curveMax, 0)}°C
+                    </Badge>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span>Min</span>
+                      <span>{round(curveMin, 0)}°C</span>
+                    </div>
+                    <Slider
+                      value={[curveMin]}
+                      min={BASE_TEMP_MIN}
+                      max={curveMax - MIN_TEMP_WINDOW_SPAN}
+                      step={1}
+                      onValueChange={(v) => applyTempWindow(v[0], curveMax)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span>Max</span>
+                      <span>{round(curveMax, 0)}°C</span>
+                    </div>
+                    <Slider
+                      value={[curveMax]}
+                      min={curveMin + MIN_TEMP_WINDOW_SPAN}
+                      max={BASE_TEMP_MAX}
+                      step={1}
+                      onValueChange={(v) => applyTempWindow(curveMin, v[0])}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span>{BASE_TEMP_MIN}°C</span>
+                    <span>{BASE_TEMP_MAX}°C</span>
+                  </div>
                 </div>
 
                 {cfg.mode === "manual" && (
