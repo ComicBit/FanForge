@@ -956,7 +956,7 @@ export default function FanForgePreview() {
       });
       return changed ? sortPoints(next) : prev;
     });
-  }, [cfg.min_pwm, cfg.max_pwm]);
+  }, [points, cfg.min_pwm, cfg.max_pwm]);
 
   const validation = useMemo(() => validateConfig(effectiveConfig), [effectiveConfig]);
   const hasPendingChanges = useMemo(
