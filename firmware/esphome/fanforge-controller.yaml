@@ -11,7 +11,7 @@ esphome:
           fanforge_api_init();
 
 esp32:
-  board: esp32-s3-devkitc-1
+  board: seeed_xiao_esp32c3
   framework:
     type: arduino
 
@@ -36,7 +36,7 @@ web_server:
 # DS18B20 bus
 one_wire:
   - platform: gpio
-    pin: GPIO4
+    pin: GPIO3
     id: ow_bus
 
 sensor:
@@ -56,7 +56,7 @@ sensor:
 output:
   - platform: ledc
     id: fan_pwm_output
-    pin: GPIO18
+    pin: GPIO5
     frequency: 25000 Hz
 
 # Persisted UI-matching config
