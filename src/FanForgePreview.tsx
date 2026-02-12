@@ -29,7 +29,7 @@ import { AnimatePresence, motion } from "framer-motion";
  *
  * Expected ESP32 endpoints (suggested):
  *   GET  /api/status -> { temp_c, pwm_pct, mode, last_update_ms }
- *   GET  /api/config -> { mode, smoothing_mode, points:[{t,p}], min_pwm, max_pwm, slew_pct_per_sec, failsafe_temp, failsafe_pwm }
+ *   GET  /api/config -> { mode, smoothing_mode, points:[{t,p}], manual_pwm, min_pwm, max_pwm, slew_pct_per_sec, failsafe_temp, failsafe_pwm }
  *   POST /api/config -> same as config (server validates & persists)
  */
 
@@ -56,6 +56,7 @@ type Config = {
   mode: Mode;
   smoothing_mode: SmoothingMode;
   points: Array<{ t: number; p: number }>;
+  manual_pwm: number;
   min_pwm: number;
   max_pwm: number;
   slew_pct_per_sec: number;
@@ -286,6 +287,7 @@ const DEFAULT_CONFIG: Config = {
     { t: 40, p: 55 },
     { t: 50, p: 100 },
   ],
+  manual_pwm: 50,
   min_pwm: 22,
   max_pwm: 100,
   slew_pct_per_sec: 10,
@@ -318,6 +320,7 @@ function normalizeConfig(cfg: Config): Config {
   const bounds = normalizePwmBounds(cfg.min_pwm, cfg.max_pwm);
   return {
     ...cfg,
+    manual_pwm: clamp(round(cfg.manual_pwm, 0), 0, 100),
     min_pwm: bounds.min,
     max_pwm: bounds.max,
     points: [...cfg.points]
@@ -429,6 +432,7 @@ function validateConfig(cfg: Config): { ok: boolean; errors: string[]; warnings:
   if (cfg.min_pwm < 0 || cfg.min_pwm > 100) errors.push("min_pwm must be 0..100.");
   if (cfg.max_pwm < 0 || cfg.max_pwm > 100) errors.push("max_pwm must be 0..100.");
   if (cfg.max_pwm < cfg.min_pwm) errors.push("max_pwm must be >= min_pwm.");
+  if (cfg.manual_pwm < 0 || cfg.manual_pwm > 100) errors.push("manual_pwm must be 0..100.");
   if (cfg.slew_pct_per_sec < 0 || cfg.slew_pct_per_sec > 100) warnings.push("Slew rate looks unusual (0..100 recommended).");
   if (cfg.failsafe_temp < 0 || cfg.failsafe_temp > 120) warnings.push("Failsafe temperature looks unusual.");
   if (cfg.failsafe_pwm < 0 || cfg.failsafe_pwm > 100) errors.push("failsafe_pwm must be 0..100.");
@@ -945,6 +949,8 @@ export default function FanForgePreview() {
   const [cfg, setCfg] = useState<Config>(DEFAULT_CONFIG);
   const [points, setPoints] = useState<Point[]>(toInternalPoints(DEFAULT_CONFIG));
   const [appliedConfig, setAppliedConfig] = useState<Config>(normalizeConfig(DEFAULT_CONFIG));
+  const [minPwmInput, setMinPwmInput] = useState(String(DEFAULT_CONFIG.min_pwm));
+  const [maxPwmInput, setMaxPwmInput] = useState(String(DEFAULT_CONFIG.max_pwm));
 
   // Simulated environment
   const [simTemp, setSimTemp] = useState(41);
@@ -976,6 +982,14 @@ export default function FanForgePreview() {
     });
   }, [points, cfg.min_pwm, cfg.max_pwm]);
 
+  useEffect(() => {
+    setMinPwmInput(String(round(cfg.min_pwm, 0)));
+  }, [cfg.min_pwm]);
+
+  useEffect(() => {
+    setMaxPwmInput(String(round(cfg.max_pwm, 0)));
+  }, [cfg.max_pwm]);
+
   const validation = useMemo(() => validateConfig(effectiveConfig), [effectiveConfig]);
   const hasPendingChanges = useMemo(
     () => JSON.stringify(normalizeConfig(effectiveConfig)) !== JSON.stringify(normalizeConfig(appliedConfig)),
@@ -1002,8 +1016,7 @@ export default function FanForgePreview() {
     const c = effectiveConfig;
     if (c.mode === "off") return 0;
     if (c.mode === "manual") {
-      // In this preview, manual uses first point's PWM as a placeholder.
-      return clamp(c.points[0]?.p ?? 0, 0, 100);
+      return clamp(c.manual_pwm, 0, 100);
     }
 
     // Curve domain is 0..CURVE_XMAX. Values above saturate to the last point.
@@ -1154,6 +1167,7 @@ export default function FanForgePreview() {
         mode: (c.mode ?? "auto") as Mode,
         smoothing_mode: ((c.smoothing_mode ?? DEFAULT_CONFIG.smoothing_mode) as SmoothingMode),
         points: Array.isArray(c.points) ? c.points.map((x: any) => ({ t: Number(x.t), p: Number(x.p) })) : DEFAULT_CONFIG.points,
+        manual_pwm: Number(c.manual_pwm ?? DEFAULT_CONFIG.manual_pwm),
         min_pwm: Number(c.min_pwm ?? DEFAULT_CONFIG.min_pwm),
         max_pwm: Number(c.max_pwm ?? DEFAULT_CONFIG.max_pwm),
         slew_pct_per_sec: Number(c.slew_pct_per_sec ?? DEFAULT_CONFIG.slew_pct_per_sec),
@@ -1483,22 +1497,55 @@ export default function FanForgePreview() {
                   </Select>
                 </div>
 
+                {cfg.mode === "manual" && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Label>Manual PWM %</Label>
+                        <InfoHint text="Direct manual output command sent to the controller while mode is Manual." />
+                      </div>
+                      <Badge variant="secondary">{round(cfg.manual_pwm, 0)}%</Badge>
+                    </div>
+                    <Slider
+                      value={[cfg.manual_pwm]}
+                      min={0}
+                      max={100}
+                      step={1}
+                      onValueChange={(v) => setCfg((c) => ({ ...c, manual_pwm: clamp(v[0], 0, 100) }))}
+                    />
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span>0%</span>
+                      <span>100%</span>
+                    </div>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                   <div className="space-y-2">
                     <Label>Min PWM %</Label>
                     <Input
-                      value={cfg.min_pwm}
-                      onChange={(e) =>
+                      value={minPwmInput}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        setMinPwmInput(raw);
+                        if (raw.trim() === "") return;
+                        const parsed = Number(raw);
+                        if (!Number.isFinite(parsed)) return;
                         setCfg((c) => {
-                          const raw = e.target.value.trim();
-                          if (raw === "") return c;
-                          const parsed = Number(raw);
-                          if (!Number.isFinite(parsed)) return c;
                           const min_pwm = clamp(parsed, 0, 100);
-                          if (!Number.isFinite(min_pwm)) return c;
                           return { ...c, min_pwm, max_pwm: Math.max(c.max_pwm, min_pwm) };
-                        })
-                      }
+                        });
+                      }}
+                      onBlur={() => {
+                        const parsed = Number(minPwmInput);
+                        if (!Number.isFinite(parsed)) {
+                          setMinPwmInput(String(round(cfg.min_pwm, 0)));
+                          return;
+                        }
+                        const min_pwm = clamp(parsed, 0, 100);
+                        setCfg((c) => ({ ...c, min_pwm, max_pwm: Math.max(c.max_pwm, min_pwm) }));
+                        setMinPwmInput(String(round(min_pwm, 0)));
+                      }}
                       className="rounded-xl"
                       inputMode="numeric"
                     />
@@ -1506,18 +1553,28 @@ export default function FanForgePreview() {
                   <div className="space-y-2">
                     <Label>Max PWM %</Label>
                     <Input
-                      value={cfg.max_pwm}
-                      onChange={(e) =>
+                      value={maxPwmInput}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        setMaxPwmInput(raw);
+                        if (raw.trim() === "") return;
+                        const parsed = Number(raw);
+                        if (!Number.isFinite(parsed)) return;
                         setCfg((c) => {
-                          const raw = e.target.value.trim();
-                          if (raw === "") return c;
-                          const parsed = Number(raw);
-                          if (!Number.isFinite(parsed)) return c;
                           const max_pwm = clamp(parsed, 0, 100);
-                          if (!Number.isFinite(max_pwm)) return c;
                           return { ...c, max_pwm, min_pwm: Math.min(c.min_pwm, max_pwm) };
-                        })
-                      }
+                        });
+                      }}
+                      onBlur={() => {
+                        const parsed = Number(maxPwmInput);
+                        if (!Number.isFinite(parsed)) {
+                          setMaxPwmInput(String(round(cfg.max_pwm, 0)));
+                          return;
+                        }
+                        const max_pwm = clamp(parsed, 0, 100);
+                        setCfg((c) => ({ ...c, max_pwm, min_pwm: Math.min(c.min_pwm, max_pwm) }));
+                        setMaxPwmInput(String(round(max_pwm, 0)));
+                      }}
                       className="rounded-xl"
                       inputMode="numeric"
                     />

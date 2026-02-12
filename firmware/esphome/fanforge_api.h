@@ -46,6 +46,8 @@ static constexpr float FT_PWM_DEADBAND_PCT = 1.5f;
 
 // Failsafe hysteresis.
 static constexpr float FT_FAILSAFE_HYST_C = 1.0f;
+static float ft_last_target_pwm_pct = 0.0f;
+static float ft_last_output_level = 0.0f;
 
 struct FtPoint {
   float t;
@@ -341,6 +343,7 @@ static inline void ft_apply_pwm_percent(float pwm_pct) {
   if (FT_PWM_INVERTED) level = 1.0f - level;
 
   level = ft_clampf(level, 0.0f, 1.0f);
+  ft_last_output_level = level;
   id(fan_pwm_output).set_level(level);
 }
 
@@ -358,73 +361,84 @@ static inline void fanforge_control_tick() {
     n = 2;
   }
 
-  // Read temp
-  float raw_temp = id(temp_c).state;
-  if (!isfinite(raw_temp)) {
-    id(last_update_ms) = millis();
-    return;
-  }
-
-  // EMA filter
-  if (!temp_filter_initialized || !isfinite(filtered_temp_c)) {
-    filtered_temp_c = raw_temp;
-    temp_filter_initialized = true;
-  } else {
-    filtered_temp_c += FT_TEMP_EMA_ALPHA * (raw_temp - filtered_temp_c);
-  }
-  float temp = filtered_temp_c;
-
   // Compute target
   float target_pwm = 0.0f;
+  float temp = NAN;
+  bool is_auto_mode = false;
+  bool use_output_shaping = false;
 
   if (id(cfg_mode) == 2) {
-    // OFF: force to 0 and do not clamp up to min_pwm.
+    // OFF: force to 0 immediately.
     target_pwm = 0.0f;
   } else if (id(cfg_mode) == 1) {
-    // MANUAL: allow true 0.
+    // MANUAL: direct operator control for validation/tuning.
     target_pwm = ft_clampf(id(cfg_manual_pwm), 0.0f, 100.0f);
   } else {
     // AUTO
+    // AUTO depends on temperature validity. MANUAL/OFF should still operate without a sensor reading.
+    float raw_temp = id(temp_c).state;
+    if (!isfinite(raw_temp)) {
+      id(last_update_ms) = millis();
+      return;
+    }
+    if (!temp_filter_initialized || !isfinite(filtered_temp_c)) {
+      filtered_temp_c = raw_temp;
+      temp_filter_initialized = true;
+    } else {
+      filtered_temp_c += FT_TEMP_EMA_ALPHA * (raw_temp - filtered_temp_c);
+    }
+    temp = filtered_temp_c;
+
+    is_auto_mode = true;
+    use_output_shaping = true;
     target_pwm = (id(cfg_smoothing_mode) == 1) ? ft_curve_smooth(temp, points, n) : ft_curve_linear(temp, points, n);
     target_pwm = ft_clampf(target_pwm, 0.0f, 100.0f);
   }
 
-  // Only apply min/max clamp when we're not asking for 0.
-  // This keeps "off" and "manual 0" truly off, while still enforcing a practical
-  // minimum once we want the fan running.
-  if (target_pwm > 0.0f) {
-    target_pwm = ft_clampf(target_pwm, id(cfg_min_pwm), id(cfg_max_pwm));
-  } else {
-    target_pwm = 0.0f;
+  if (is_auto_mode) {
+    // In AUTO, enforce a practical running window once we're above 0.
+    if (target_pwm > 0.0f) {
+      target_pwm = ft_clampf(target_pwm, id(cfg_min_pwm), id(cfg_max_pwm));
+    } else {
+      target_pwm = 0.0f;
+    }
   }
 
-  // Failsafe latch with hysteresis
-  if (temp >= id(cfg_failsafe_temp)) {
-    failsafe_latched = true;
-  } else if (temp <= (id(cfg_failsafe_temp) - FT_FAILSAFE_HYST_C)) {
+  // Failsafe applies only during AUTO control.
+  if (is_auto_mode) {
+    if (temp >= id(cfg_failsafe_temp)) {
+      failsafe_latched = true;
+    } else if (temp <= (id(cfg_failsafe_temp) - FT_FAILSAFE_HYST_C)) {
+      failsafe_latched = false;
+    }
+    if (failsafe_latched) target_pwm = fmaxf(target_pwm, id(cfg_failsafe_pwm));
+  } else {
     failsafe_latched = false;
   }
-  if (failsafe_latched) target_pwm = fmaxf(target_pwm, id(cfg_failsafe_pwm));
   target_pwm = ft_clampf(target_pwm, 0.0f, 100.0f);
 
-  // Deadband: avoid micro-hunting due to quantization/noise
-  if (fabsf(target_pwm - id(current_pwm_pct)) < FT_PWM_DEADBAND_PCT) {
-    target_pwm = id(current_pwm_pct);
-  }
-
-  // Slew limiting
+  float next_pwm = target_pwm;
   uint32_t now = millis();
-  float dt = 0.2f;
-  if (id(last_update_ms) > 0 && now >= id(last_update_ms)) {
-    dt = fmaxf(0.02f, (now - id(last_update_ms)) / 1000.0f);
-  }
+  if (use_output_shaping) {
+    // Deadband: avoid micro-hunting due to quantization/noise
+    if (fabsf(target_pwm - id(current_pwm_pct)) < FT_PWM_DEADBAND_PCT) {
+      target_pwm = id(current_pwm_pct);
+    }
 
-  float max_step = ft_clampf(id(cfg_slew_pct_per_sec), 0.0f, 100.0f) * dt;
-  float delta = target_pwm - id(current_pwm_pct);
-  float step = ft_clampf(delta, -max_step, max_step);
-  float next_pwm = ft_clampf(id(current_pwm_pct) + step, 0.0f, 100.0f);
+    // Slew limiting
+    float dt = 0.2f;
+    if (id(last_update_ms) > 0 && now >= id(last_update_ms)) {
+      dt = fmaxf(0.02f, (now - id(last_update_ms)) / 1000.0f);
+    }
+
+    float max_step = ft_clampf(id(cfg_slew_pct_per_sec), 0.0f, 100.0f) * dt;
+    float delta = target_pwm - id(current_pwm_pct);
+    float step = ft_clampf(delta, -max_step, max_step);
+    next_pwm = ft_clampf(id(current_pwm_pct) + step, 0.0f, 100.0f);
+  }
 
   id(current_pwm_pct) = next_pwm;
+  ft_last_target_pwm_pct = target_pwm;
   id(last_update_ms) = now;
 
   // Drive hardware output
@@ -463,8 +477,14 @@ class FanForgeApiHandler : public AsyncWebHandler {
         doc["temp_c"] = nullptr;
 
       doc["pwm_pct"] = id(current_pwm_pct);
+      doc["target_pwm_pct"] = ft_last_target_pwm_pct;
+      doc["output_level"] = ft_last_output_level;
       doc["mode"] = ft_mode_to_str(id(cfg_mode));
       doc["smoothing_mode"] = ft_smoothing_to_str(id(cfg_smoothing_mode));
+      doc["min_pwm"] = id(cfg_min_pwm);
+      doc["max_pwm"] = id(cfg_max_pwm);
+      doc["slew_pct_per_sec"] = id(cfg_slew_pct_per_sec);
+      doc["manual_pwm"] = id(cfg_manual_pwm);
       doc["last_update_ms"] = id(last_update_ms);
 
       ft_send_json(request, doc, 200);

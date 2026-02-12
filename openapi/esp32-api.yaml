@@ -96,6 +96,11 @@ components:
           minItems: 2
           items:
             $ref: '#/components/schemas/CurvePoint'
+        manual_pwm:
+          type: number
+          description: Manual PWM percentage used when mode is manual
+          minimum: 0
+          maximum: 100
         min_pwm:
           type: number
           minimum: 0
