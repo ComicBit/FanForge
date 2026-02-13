@@ -40,6 +40,7 @@ static constexpr bool FT_PWM_INVERTED = true;
 
 // Control-loop stabilization for real sensor noise and DS18B20 quantization.
 static constexpr float FT_TEMP_EMA_ALPHA = 0.25f;
+static constexpr float FT_TEMP_CONTROL_DEADBAND_C = 0.35f;
 
 // Output "do nothing" zone to prevent micro-hunting.
 static constexpr float FT_PWM_DEADBAND_PCT = 1.5f;
@@ -371,6 +372,8 @@ static inline void ft_apply_pwm_percent(float pwm_pct) {
 static inline void fanforge_control_tick() {
   static bool temp_filter_initialized = false;
   static float filtered_temp_c = NAN;
+  static bool control_temp_initialized = false;
+  static float control_temp_c = NAN;
   static bool failsafe_latched = false;
 
   // Load curve points
@@ -408,7 +411,15 @@ static inline void fanforge_control_tick() {
     } else {
       filtered_temp_c += FT_TEMP_EMA_ALPHA * (raw_temp - filtered_temp_c);
     }
-    temp = filtered_temp_c;
+    // Temperature deadband before curve evaluation: ignore tiny quantization
+    // swings (e.g., DS18B20 alternating between 23.5 and 24.0C).
+    if (!control_temp_initialized || !isfinite(control_temp_c)) {
+      control_temp_c = filtered_temp_c;
+      control_temp_initialized = true;
+    } else if (fabsf(filtered_temp_c - control_temp_c) >= FT_TEMP_CONTROL_DEADBAND_C) {
+      control_temp_c = filtered_temp_c;
+    }
+    temp = control_temp_c;
 
     is_auto_mode = true;
     use_output_shaping = true;

@@ -1547,48 +1547,48 @@ export default function FanForgePreview() {
                   </div>
                 </div>
 
-                <div className={isLiveDeviceConnected ? "space-y-2 opacity-50 pointer-events-none" : "space-y-2"}>
-                  <div className="flex items-center justify-between">
-                    <Label>Simulate temperature</Label>
-                    <Badge variant="secondary">
-                      {isLiveDeviceConnected ? "Live device connected" : `Target ${round(targetPWM, 0)}%`}
-                    </Badge>
-                  </div>
-                  <Slider
-                    value={[clamp(simTemp, curveMin, curveMax)]}
-                    min={curveMin}
-                    max={curveMax}
-                    step={0.5}
-                    disabled={isLiveDeviceConnected}
-                    onValueChange={(v) => setSimTemp(v[0])}
-                  />
-                  <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <span>{round(curveMin, 0)}°C</span>
-                    <span>{curveMax}°C</span>
-                  </div>
-                </div>
+                {!isLiveDeviceConnected && (
+                  <>
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Label>Simulate temperature</Label>
+                        <Badge variant="secondary">{`Target ${round(targetPWM, 0)}%`}</Badge>
+                      </div>
+                      <Slider
+                        value={[clamp(simTemp, curveMin, curveMax)]}
+                        min={curveMin}
+                        max={curveMax}
+                        step={0.5}
+                        onValueChange={(v) => setSimTemp(v[0])}
+                      />
+                      <div className="flex items-center justify-between text-xs text-muted-foreground">
+                        <span>{round(curveMin, 0)}°C</span>
+                        <span>{curveMax}°C</span>
+                      </div>
+                    </div>
 
-                <div className={isLiveDeviceConnected ? "flex items-start justify-between gap-3 opacity-50 pointer-events-none" : "flex items-start justify-between gap-3"}>
-                  <div className="space-y-0.5">
-                    <div className="text-sm font-medium">Temp drift</div>
-                    <div className="text-xs text-muted-foreground">Adds small random variation</div>
-                  </div>
-                  <Switch checked={simRunning} disabled={isLiveDeviceConnected} onCheckedChange={setSimRunning} />
-                </div>
-                <div className={isLiveDeviceConnected ? "space-y-2 opacity-50 pointer-events-none" : "space-y-2"}>
-                  <div className="flex items-center justify-between">
-                    <Label>Temp drift threshold (°C)</Label>
-                    <Badge variant="secondary">{round(simDriftThreshold, 2)}</Badge>
-                  </div>
-                  <Slider
-                    value={[simDriftThreshold]}
-                    min={0.05}
-                    max={2}
-                    step={0.05}
-                    disabled={isLiveDeviceConnected}
-                    onValueChange={(v) => setSimDriftThreshold(v[0])}
-                  />
-                </div>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="space-y-0.5">
+                        <div className="text-sm font-medium">Temp drift</div>
+                        <div className="text-xs text-muted-foreground">Adds small random variation</div>
+                      </div>
+                      <Switch checked={simRunning} onCheckedChange={setSimRunning} />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Label>Temp drift threshold (°C)</Label>
+                        <Badge variant="secondary">{round(simDriftThreshold, 2)}</Badge>
+                      </div>
+                      <Slider
+                        value={[simDriftThreshold]}
+                        min={0.05}
+                        max={2}
+                        step={0.05}
+                        onValueChange={(v) => setSimDriftThreshold(v[0])}
+                      />
+                    </div>
+                  </>
+                )}
               </CardContent>
             </Card>
 

@@ -16,6 +16,11 @@ esp32:
     type: arduino
 
 logger:
+  level: INFO
+  logs:
+    sensor: WARN
+    dallas.temp.sensor: WARN
+    select: WARN
 
 api:
 ota:
@@ -158,12 +163,16 @@ select:
       return std::string("auto");
     set_action:
       - lambda: |-
+          int new_mode = 0;
           if (x == "manual") {
-            id(cfg_mode) = 1;
+            new_mode = 1;
           } else if (x == "off") {
-            id(cfg_mode) = 2;
-          } else {
-            id(cfg_mode) = 0;
+            new_mode = 2;
+          }
+
+          if (id(cfg_mode) != new_mode) {
+            id(cfg_mode) = new_mode;
+            ESP_LOGI("fan_mode", "Fan mode changed to %s", x.c_str());
           }
 
 interval:
