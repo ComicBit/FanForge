@@ -29,7 +29,7 @@ import { AnimatePresence, motion } from "framer-motion";
  *
  * Expected ESP32 endpoints (suggested):
  *   GET  /api/status -> { temp_c, pwm_pct, mode, last_update_ms }
- *   GET  /api/config -> { mode, smoothing_mode, points:[{t,p}], manual_pwm, min_pwm, max_pwm, slew_pct_per_sec, failsafe_temp, failsafe_pwm }
+ *   GET  /api/config -> { mode, smoothing_mode, points:[{t,p}], curve_min, curve_max, manual_pwm, min_pwm, max_pwm, slew_pct_per_sec, failsafe_temp, failsafe_pwm }
  *   POST /api/config -> same as config (server validates & persists)
  */
 
@@ -56,6 +56,8 @@ type Config = {
   mode: Mode;
   smoothing_mode: SmoothingMode;
   points: Array<{ t: number; p: number }>;
+  curve_min: number;
+  curve_max: number;
   manual_pwm: number;
   min_pwm: number;
   max_pwm: number;
@@ -300,10 +302,39 @@ function MetricTimeline({
   );
 }
 
-const STORAGE_KEYS = {
-  apiBase: "fanTweaker.apiBase",
-  useApi: "fanTweaker.useApi",
-} as const;
+const UI_SETTINGS_COOKIE = "fanforge.ui";
+const UI_SETTINGS_COOKIE_MAX_AGE_SEC = 60 * 60 * 24 * 365;
+
+type UiSettingsCookie = {
+  apiBase?: string;
+  useApi?: boolean;
+  curveMin?: number;
+  curveMax?: number;
+  simRunning?: boolean;
+  simDriftThreshold?: number;
+};
+
+function readUiSettingsCookie(): UiSettingsCookie {
+  if (typeof document === "undefined") return {};
+  const cookie = document.cookie
+    .split("; ")
+    .find((entry) => entry.startsWith(`${UI_SETTINGS_COOKIE}=`));
+  if (!cookie) return {};
+  const encoded = cookie.slice(UI_SETTINGS_COOKIE.length + 1);
+  try {
+    const parsed = JSON.parse(decodeURIComponent(encoded));
+    if (parsed && typeof parsed === "object") return parsed as UiSettingsCookie;
+  } catch {
+    // no-op: malformed cookie payload
+  }
+  return {};
+}
+
+function writeUiSettingsCookie(settings: UiSettingsCookie) {
+  if (typeof document === "undefined") return;
+  const payload = encodeURIComponent(JSON.stringify(settings));
+  document.cookie = `${UI_SETTINGS_COOKIE}=${payload}; path=/; max-age=${UI_SETTINGS_COOKIE_MAX_AGE_SEC}; SameSite=Lax`;
+}
 
 const DEFAULT_CONFIG: Config = {
   mode: "auto",
@@ -315,6 +346,8 @@ const DEFAULT_CONFIG: Config = {
     { t: 40, p: 55 },
     { t: 50, p: 100 },
   ],
+  curve_min: BASE_TEMP_MIN,
+  curve_max: BASE_TEMP_MAX,
   manual_pwm: 50,
   min_pwm: 22,
   max_pwm: 100,
@@ -346,8 +379,11 @@ function toConfig(points: Point[], cfg: Config): Config {
 
 function normalizeConfig(cfg: Config): Config {
   const bounds = normalizePwmBounds(cfg.min_pwm, cfg.max_pwm);
+  const tempWindow = normalizeTempWindow(cfg.curve_min, cfg.curve_max);
   return {
     ...cfg,
+    curve_min: tempWindow.min,
+    curve_max: tempWindow.max,
     manual_pwm: clamp(round(cfg.manual_pwm, 0), 0, 100),
     min_pwm: bounds.min,
     max_pwm: bounds.max,
@@ -446,6 +482,7 @@ function validateConfig(cfg: Config): { ok: boolean; errors: string[]; warnings:
   const errors: string[] = [];
   const warnings: string[] = [];
   const bounds = normalizePwmBounds(cfg.min_pwm, cfg.max_pwm);
+  const window = normalizeTempWindow(cfg.curve_min, cfg.curve_max);
 
   if (cfg.points.length < 2) errors.push("Need at least 2 curve points.");
   const pts = [...cfg.points].sort((a, b) => a.t - b.t);
@@ -460,6 +497,9 @@ function validateConfig(cfg: Config): { ok: boolean; errors: string[]; warnings:
   if (cfg.min_pwm < 0 || cfg.min_pwm > 100) errors.push("min_pwm must be 0..100.");
   if (cfg.max_pwm < 0 || cfg.max_pwm > 100) errors.push("max_pwm must be 0..100.");
   if (cfg.max_pwm < cfg.min_pwm) errors.push("max_pwm must be >= min_pwm.");
+  if (cfg.curve_min !== window.min || cfg.curve_max !== window.max) {
+    errors.push(`curve_min/curve_max must be within ${BASE_TEMP_MIN}..${BASE_TEMP_MAX}°C and keep at least ${MIN_TEMP_WINDOW_SPAN}°C span.`);
+  }
   if (cfg.manual_pwm < 0 || cfg.manual_pwm > 100) errors.push("manual_pwm must be 0..100.");
   if (cfg.slew_pct_per_sec < 0 || cfg.slew_pct_per_sec > 100) warnings.push("Slew rate looks unusual (0..100 recommended).");
   if (cfg.failsafe_temp < 0 || cfg.failsafe_temp > 120) warnings.push("Failsafe temperature looks unusual.");
@@ -1051,6 +1091,7 @@ export default function FanForgePreview() {
 
       setCurveMin(normalized.min);
       setCurveMax(normalized.max);
+      setCfg((c) => ({ ...c, curve_min: normalized.min, curve_max: normalized.max }));
       setPoints((prev) =>
         sortPoints(
           prev.map((pt) => ({
@@ -1129,13 +1170,21 @@ export default function FanForgePreview() {
 
   useEffect(() => {
     try {
-      const persistedApiBase = localStorage.getItem(STORAGE_KEYS.apiBase);
-      const persistedUseApi = localStorage.getItem(STORAGE_KEYS.useApi);
+      const settings = readUiSettingsCookie();
+      if (typeof settings.apiBase === "string" && settings.apiBase.trim()) setApiBase(settings.apiBase);
+      if (typeof settings.useApi === "boolean") setUseApi(settings.useApi);
+      if (typeof settings.simRunning === "boolean") setSimRunning(settings.simRunning);
+      if (Number.isFinite(settings.simDriftThreshold)) {
+        setSimDriftThreshold(clamp(Number(settings.simDriftThreshold), 0.05, 2));
+      }
 
-      if (persistedApiBase) setApiBase(persistedApiBase);
-      if (persistedUseApi === "true" || persistedUseApi === "false") setUseApi(persistedUseApi === "true");
+      if (Number.isFinite(settings.curveMin) || Number.isFinite(settings.curveMax)) {
+        const fromMin = Number.isFinite(settings.curveMin) ? Number(settings.curveMin) : curveMin;
+        const fromMax = Number.isFinite(settings.curveMax) ? Number(settings.curveMax) : curveMax;
+        applyTempWindow(fromMin, fromMax);
+      }
     } catch {
-      // no-op: localStorage unavailable
+      // no-op: cookie unavailable
     } finally {
       setHydrated(true);
     }
@@ -1144,12 +1193,18 @@ export default function FanForgePreview() {
   useEffect(() => {
     if (!hydrated) return;
     try {
-      localStorage.setItem(STORAGE_KEYS.apiBase, apiBase);
-      localStorage.setItem(STORAGE_KEYS.useApi, String(useApi));
+      writeUiSettingsCookie({
+        apiBase,
+        useApi,
+        curveMin,
+        curveMax,
+        simRunning,
+        simDriftThreshold,
+      });
     } catch {
-      // no-op: localStorage unavailable
+      // no-op: cookie unavailable
     }
-  }, [hydrated, apiBase, useApi]);
+  }, [hydrated, apiBase, useApi, curveMin, curveMax, simRunning, simDriftThreshold]);
 
   // ---------- API wiring (optional) ----------
   async function apiGet(path: string) {
@@ -1225,6 +1280,8 @@ export default function FanForgePreview() {
         mode: (c.mode ?? "auto") as Mode,
         smoothing_mode: ((c.smoothing_mode ?? DEFAULT_CONFIG.smoothing_mode) as SmoothingMode),
         points: Array.isArray(c.points) ? c.points.map((x: any) => ({ t: Number(x.t), p: Number(x.p) })) : DEFAULT_CONFIG.points,
+        curve_min: Number(c.curve_min ?? DEFAULT_CONFIG.curve_min),
+        curve_max: Number(c.curve_max ?? DEFAULT_CONFIG.curve_max),
         manual_pwm: Number(c.manual_pwm ?? DEFAULT_CONFIG.manual_pwm),
         min_pwm: Number(c.min_pwm ?? DEFAULT_CONFIG.min_pwm),
         max_pwm: Number(c.max_pwm ?? DEFAULT_CONFIG.max_pwm),
@@ -1236,6 +1293,9 @@ export default function FanForgePreview() {
       setCfg(sanitized);
       setSmoothingMode(sanitized.smoothing_mode);
       setPoints(toInternalPoints(sanitized));
+      setCurveMin(sanitized.curve_min);
+      setCurveMax(sanitized.curve_max);
+      setSimTemp((t) => clamp(t, sanitized.curve_min, sanitized.curve_max));
       setAppliedConfig(sanitized);
       setConnected(true);
       if (notify) {

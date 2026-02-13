@@ -76,6 +76,16 @@ globals:
     restore_value: yes
     initial_value: '"[{\"t\":20,\"p\":20},{\"t\":30,\"p\":30},{\"t\":40,\"p\":55},{\"t\":50,\"p\":100}]"'
 
+  - id: cfg_curve_min
+    type: float
+    restore_value: yes
+    initial_value: '15'
+
+  - id: cfg_curve_max
+    type: float
+    restore_value: yes
+    initial_value: '50'
+
   - id: cfg_min_pwm
     type: float
     restore_value: yes

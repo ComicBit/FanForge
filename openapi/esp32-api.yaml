@@ -109,6 +109,16 @@ components:
           type: number
           minimum: 0
           maximum: 100
+        curve_min:
+          type: number
+          description: Diagram temperature window minimum (used by UI zoom mapping)
+          minimum: 15
+          maximum: 50
+        curve_max:
+          type: number
+          description: Diagram temperature window maximum (used by UI zoom mapping)
+          minimum: 15
+          maximum: 50
         slew_pct_per_sec:
           type: number
           minimum: 0

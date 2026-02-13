@@ -254,6 +254,8 @@ static inline void ft_build_config_doc(JsonDocument &doc) {
 
   doc["min_pwm"] = id(cfg_min_pwm);
   doc["max_pwm"] = id(cfg_max_pwm);
+  doc["curve_min"] = id(cfg_curve_min);
+  doc["curve_max"] = id(cfg_curve_max);
   doc["slew_pct_per_sec"] = id(cfg_slew_pct_per_sec);
   doc["failsafe_temp"] = id(cfg_failsafe_temp);
   doc["failsafe_pwm"] = id(cfg_failsafe_pwm);
@@ -298,6 +300,23 @@ static inline bool ft_apply_config_doc(JsonDocument &doc, String &err) {
   float slew = ft_clampf(doc["slew_pct_per_sec"].as<float>(), 0.0f, 100.0f);
   float failsafe_temp = ft_clampf(doc["failsafe_temp"].as<float>(), 0.0f, 120.0f);
   float failsafe_pwm = ft_clampf(doc["failsafe_pwm"].as<float>(), 0.0f, 100.0f);
+  float curve_min = id(cfg_curve_min);
+  float curve_max = id(cfg_curve_max);
+
+  if (doc["curve_min"].is<float>()) curve_min = doc["curve_min"].as<float>();
+  if (doc["curve_max"].is<float>()) curve_max = doc["curve_max"].as<float>();
+
+  curve_min = ft_clampf(roundf(curve_min), 15.0f, 50.0f);
+  curve_max = ft_clampf(roundf(curve_max), 15.0f, 50.0f);
+  if (curve_max < curve_min) {
+    float tmp = curve_min;
+    curve_min = curve_max;
+    curve_max = tmp;
+  }
+  if ((curve_max - curve_min) < 1.0f) {
+    if ((curve_max + 1.0f) <= 50.0f) curve_max = curve_min + 1.0f;
+    else curve_min = curve_max - 1.0f;
+  }
 
   if (max_pwm < min_pwm) {
     err = "max_pwm must be >= min_pwm";
@@ -323,6 +342,8 @@ static inline bool ft_apply_config_doc(JsonDocument &doc, String &err) {
   id(cfg_points_json) = points_json;
   id(cfg_min_pwm) = min_pwm;
   id(cfg_max_pwm) = max_pwm;
+  id(cfg_curve_min) = curve_min;
+  id(cfg_curve_max) = curve_max;
   id(cfg_slew_pct_per_sec) = slew;
   id(cfg_failsafe_temp) = failsafe_temp;
   id(cfg_failsafe_pwm) = failsafe_pwm;
