@@ -23,6 +23,7 @@ logger:
     select: WARN
 
 api:
+  batch_delay: 0ms
 ota:
   - platform: esphome
     password: !secret ota_password
@@ -30,6 +31,7 @@ ota:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
+  power_save_mode: NONE
   ap:
     ssid: "FanForge Fallback"
     password: !secret fallback_ap_password
