@@ -359,6 +359,18 @@ static inline bool ft_apply_config_doc(JsonDocument &doc, String &err) {
     id(cfg_manual_pwm) = ft_clampf(doc["manual_pwm"].as<float>(), 0.0f, 100.0f);
   }
 
+  if (id(cfg_mode) != prev_mode) {
+    id(fan_mode).publish_state(ft_mode_to_str(id(cfg_mode)));
+  }
+
+  if (id(cfg_mode) == 1) {
+    if (id(cfg_manual_pwm) != prev_manual_pwm || doc["manual_pwm"].is<float>()) {
+      id(fan_manual_pwm).publish_state(id(cfg_manual_pwm));
+    }
+  } else {
+    id(fan_manual_pwm).publish_state(NAN);
+  }
+
   return true;
 }
 
