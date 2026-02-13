@@ -70,8 +70,7 @@ sensor:
     lambda: |-
       if (!id(control_temp_valid)) return NAN;
       return id(control_temp_c);
-    filters:
-      - heartbeat: 10s
+    force_update: true
     update_interval: 1s
   - platform: template
     id: pwm_pct_sensor
@@ -82,8 +81,7 @@ sensor:
     icon: mdi:fan
     lambda: |-
       return id(current_pwm_pct);
-    filters:
-      - heartbeat: 60s
+    force_update: true
     update_interval: 1s
 
 # 6N137-driven PWM output.
