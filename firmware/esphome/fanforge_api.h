@@ -399,6 +399,10 @@ static inline void fanforge_control_tick() {
     } else if (fabsf(raw_temp - ft_control_temp_c) >= FT_TEMP_CONTROL_DEADBAND_C) {
       ft_control_temp_c = raw_temp;
     }
+    id(control_temp_c) = ft_control_temp_c;
+    id(control_temp_valid) = true;
+  } else {
+    id(control_temp_valid) = false;
   }
 
   if (id(cfg_mode) == 2) {

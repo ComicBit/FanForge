@@ -39,6 +39,7 @@ captive_portal:
 web_server:
   port: 80
   version: 3
+  ota: false
 
 # DS18B20 bus
 one_wire:
@@ -50,11 +51,37 @@ sensor:
   - platform: dallas_temp
     one_wire_id: ow_bus
     id: temp_c
-    name: "Controller Temperature"
+    name: "Controller Temperature Raw"
+    internal: true
     # 9-bit (0.5 C) shortens conversion time to ~94 ms.
     # ESPHome's dallas_temp reads asynchronously (conversion + deferred readback),
     # so this does not block the main control loop.
     resolution: 9
+    update_interval: 1s
+  - platform: template
+    id: temp_c_clean
+    name: "Controller Temperature"
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    lambda: |-
+      if (!id(control_temp_valid)) return NAN;
+      return id(control_temp_c);
+    filters:
+      - heartbeat: 10s
+    update_interval: 1s
+  - platform: template
+    id: pwm_pct_sensor
+    name: "Fan PWM Speed"
+    unit_of_measurement: "%"
+    state_class: measurement
+    accuracy_decimals: 0
+    icon: mdi:fan
+    lambda: |-
+      return id(current_pwm_pct);
+    filters:
+      - heartbeat: 60s
     update_interval: 1s
 
 # 6N137-driven PWM output.
@@ -134,6 +161,16 @@ globals:
     restore_value: no
     initial_value: '0'
 
+  - id: control_temp_c
+    type: float
+    restore_value: no
+    initial_value: '0'
+
+  - id: control_temp_valid
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
 number:
   - platform: template
     id: fan_manual_pwm
@@ -144,9 +181,11 @@ number:
     unit_of_measurement: "%"
     mode: slider
     lambda: |-
+      if (id(cfg_mode) != 1) return NAN;
       return id(cfg_manual_pwm);
     set_action:
       - lambda: |-
+          if (id(cfg_mode) != 1) return;
           id(cfg_manual_pwm) = x;
 
 select:
