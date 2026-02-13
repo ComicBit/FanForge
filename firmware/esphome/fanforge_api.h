@@ -38,17 +38,19 @@ static constexpr int FT_MAX_POINTS = 16;
  */
 static constexpr bool FT_PWM_INVERTED = true;
 
-// Control-loop stabilization for real sensor noise and DS18B20 quantization.
-static constexpr float FT_TEMP_EMA_ALPHA = 0.25f;
-static constexpr float FT_TEMP_CONTROL_DEADBAND_C = 0.35f;
+// Ignore only DS18B20 half-degree chatter around a stable point.
+// Any movement >= ~0.5 C should be considered "real" for control.
+static constexpr float FT_TEMP_CONTROL_DEADBAND_C = 0.51f;
 
-// Output "do nothing" zone to prevent micro-hunting.
-static constexpr float FT_PWM_DEADBAND_PCT = 1.5f;
+// No additional PWM deadband: temperature gating above is the only ignore rule.
+static constexpr float FT_PWM_DEADBAND_PCT = 0.0f;
 
 // Failsafe hysteresis.
 static constexpr float FT_FAILSAFE_HYST_C = 1.0f;
 static float ft_last_target_pwm_pct = 0.0f;
 static float ft_last_output_level = 0.0f;
+static bool ft_control_temp_initialized = false;
+static float ft_control_temp_c = NAN;
 
 struct FtPoint {
   float t;
@@ -370,10 +372,6 @@ static inline void ft_apply_pwm_percent(float pwm_pct) {
 }
 
 static inline void fanforge_control_tick() {
-  static bool temp_filter_initialized = false;
-  static float filtered_temp_c = NAN;
-  static bool control_temp_initialized = false;
-  static float control_temp_c = NAN;
   static bool failsafe_latched = false;
 
   // Load curve points
@@ -391,6 +389,18 @@ static inline void fanforge_control_tick() {
   bool is_auto_mode = false;
   bool use_output_shaping = false;
 
+  float raw_temp = id(temp_c).state;
+  if (isfinite(raw_temp)) {
+    // Temperature deadband before curve evaluation: ignore 0.5 C chatter,
+    // but accept larger movement immediately.
+    if (!ft_control_temp_initialized || !isfinite(ft_control_temp_c)) {
+      ft_control_temp_c = raw_temp;
+      ft_control_temp_initialized = true;
+    } else if (fabsf(raw_temp - ft_control_temp_c) >= FT_TEMP_CONTROL_DEADBAND_C) {
+      ft_control_temp_c = raw_temp;
+    }
+  }
+
   if (id(cfg_mode) == 2) {
     // OFF: force to 0 immediately.
     target_pwm = 0.0f;
@@ -400,26 +410,11 @@ static inline void fanforge_control_tick() {
   } else {
     // AUTO
     // AUTO depends on temperature validity. MANUAL/OFF should still operate without a sensor reading.
-    float raw_temp = id(temp_c).state;
-    if (!isfinite(raw_temp)) {
+    if (!isfinite(raw_temp) || !ft_control_temp_initialized || !isfinite(ft_control_temp_c)) {
       id(last_update_ms) = millis();
       return;
     }
-    if (!temp_filter_initialized || !isfinite(filtered_temp_c)) {
-      filtered_temp_c = raw_temp;
-      temp_filter_initialized = true;
-    } else {
-      filtered_temp_c += FT_TEMP_EMA_ALPHA * (raw_temp - filtered_temp_c);
-    }
-    // Temperature deadband before curve evaluation: ignore tiny quantization
-    // swings (e.g., DS18B20 alternating between 23.5 and 24.0C).
-    if (!control_temp_initialized || !isfinite(control_temp_c)) {
-      control_temp_c = filtered_temp_c;
-      control_temp_initialized = true;
-    } else if (fabsf(filtered_temp_c - control_temp_c) >= FT_TEMP_CONTROL_DEADBAND_C) {
-      control_temp_c = filtered_temp_c;
-    }
-    temp = control_temp_c;
+    temp = ft_control_temp_c;
 
     is_auto_mode = true;
     use_output_shaping = true;
@@ -503,7 +498,9 @@ class FanForgeApiHandler : public AsyncWebHandler {
     if (m == HTTP_GET && url == "/api/status") {
       JsonDocument doc;
 
-      if (isfinite(id(temp_c).state))
+      if (ft_control_temp_initialized && isfinite(ft_control_temp_c))
+        doc["temp_c"] = ft_control_temp_c;
+      else if (isfinite(id(temp_c).state))
         doc["temp_c"] = id(temp_c).state;
       else
         doc["temp_c"] = nullptr;

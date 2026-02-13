@@ -280,12 +280,12 @@ function MetricTimeline({
         >
           <feGaussianBlur stdDeviation="3" result="blur" />
         </filter>
-        <linearGradient id={`fade-${key}`} x1="0%" y1="0%" x2="100%" y2="0%">
+        <linearGradient id={`fade-${key}`} x1={pad} y1={0} x2={width - pad} y2={0} gradientUnits="userSpaceOnUse">
           <stop offset="0%" stopColor={color} stopOpacity="0.12" />
           <stop offset="55%" stopColor={color} stopOpacity="0.45" />
           <stop offset="100%" stopColor={color} stopOpacity="0.98" />
         </linearGradient>
-        <linearGradient id={`temp-gradient-${key}`} x1="0%" y1="0%" x2="100%" y2="0%">
+        <linearGradient id={`temp-gradient-${key}`} x1={pad} y1={0} x2={width - pad} y2={0} gradientUnits="userSpaceOnUse">
           {tempStops.map((s, i) => (
             <stop key={`${key}-temp-stop-${i}`} offset={s.offset} stopColor={s.color} stopOpacity={i === 0 ? 0.14 : i > 22 ? 1 : 0.72} />
           ))}
