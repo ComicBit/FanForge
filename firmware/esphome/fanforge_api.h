@@ -268,6 +268,9 @@ static inline void ft_build_config_doc(JsonDocument &doc) {
 }
 
 static inline bool ft_apply_config_doc(JsonDocument &doc, String &err) {
+  const int prev_mode = id(cfg_mode);
+  const float prev_manual_pwm = id(cfg_manual_pwm);
+
   if (!doc["mode"].is<const char *>()) {
     err = "mode is required";
     return false;

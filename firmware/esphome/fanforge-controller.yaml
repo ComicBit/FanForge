@@ -187,11 +187,13 @@ number:
       - lambda: |-
           if (id(cfg_mode) != 1) return;
           id(cfg_manual_pwm) = x;
+          id(fan_manual_pwm).publish_state(x);
 
 select:
   - platform: template
     id: fan_mode
     name: "Fan Mode"
+    update_interval: 200ms
     options:
       - "auto"
       - "manual"
@@ -211,6 +213,12 @@ select:
 
           if (id(cfg_mode) != new_mode) {
             id(cfg_mode) = new_mode;
+            id(fan_mode).publish_state(x);
+            if (new_mode == 1) {
+              id(fan_manual_pwm).publish_state(id(cfg_manual_pwm));
+            } else {
+              id(fan_manual_pwm).publish_state(NAN);
+            }
             ESP_LOGI("fan_mode", "Fan mode changed to %s", x.c_str());
           }
 
