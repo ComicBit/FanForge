@@ -125,8 +125,10 @@
   position: relative;
   z-index: 0;
   box-shadow:
-    inset 0.6em 1em 10px rgba(0, 0, 0, 0.15),
-    inset -0.6em -1em 10px rgba(255, 255, 255, 0.415);
+    inset 0.5rem 0.5rem 1rem rgba(54, 85, 153, 0.15),
+    inset -0.25rem -0.25rem 1rem rgba(255, 255, 255, 0.7),
+    0.1rem 0.1rem 0.1rem rgba(255, 255, 255, 0.7),
+    -0.1rem -0.1rem 0.1rem rgba(54, 85, 153, 0.15);
 }
 
 .ft-skeuo-slider-thumb {
@@ -136,18 +138,20 @@
   outline: none;
   -webkit-tap-highlight-color: transparent;
   box-shadow:
-    inset 0.8em 0.8em 5px -8px rgba(255, 255, 255, 0.4),
-    inset -0.4em -0.4em 10px -3px rgba(0, 0, 0, 0.2),
-    0.7em 0.5em 7px -0.5em rgba(0, 0, 0, 0.4);
+    inset 0.5rem 0.5rem 1rem rgba(54, 85, 153, 0.15),
+    inset -0.25rem -0.25rem 1rem rgba(255, 255, 255, 0.7),
+    0.1rem 0.1rem 0.1rem rgba(255, 255, 255, 0.7),
+    -0.1rem -0.1rem 0.1rem rgba(54, 85, 153, 0.15);
 }
 
 .ft-skeuo-slider-thumb:focus,
 .ft-skeuo-slider-thumb:focus-visible {
   outline: none;
   box-shadow:
-    inset 0.8em 0.8em 5px -8px rgba(255, 255, 255, 0.4),
-    inset -0.4em -0.4em 10px -3px rgba(0, 0, 0, 0.2),
-    0.7em 0.5em 7px -0.5em rgba(0, 0, 0, 0.4);
+    inset 0.5rem 0.5rem 1rem rgba(54, 85, 153, 0.15),
+    inset -0.25rem -0.25rem 1rem rgba(255, 255, 255, 0.7),
+    0.1rem 0.1rem 0.1rem rgba(255, 255, 255, 0.7),
+    -0.1rem -0.1rem 0.1rem rgba(54, 85, 153, 0.15);
 }
 
 .nmt-switch {
